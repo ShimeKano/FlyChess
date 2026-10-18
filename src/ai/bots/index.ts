@@ -1,5 +1,5 @@
 /**
- * Everyone who can sit at the board: the fly at its four search budgets, three parody characters
+ * Everyone who can sit at the board: the fly at three fixed search budgets, three parody characters
  * who play from Stockfish's candidate lines, and Stockfish itself with the player's settings.
  * A game seats two of them, or one and the player.
  */
