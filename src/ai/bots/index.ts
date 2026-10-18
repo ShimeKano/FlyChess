@@ -62,7 +62,6 @@ const flies: Opponent[] = FLY_LEVELS.map((level) => ({
   avatarUrl: flyAvatarUrl(level.id),
   bot: fly,
   rating: level.rating,
-  experimental: level.experimental,
 }));
 
 const characters: Opponent[] = CHARACTERS.map((character: Character) => ({
