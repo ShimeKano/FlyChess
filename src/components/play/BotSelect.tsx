@@ -14,7 +14,7 @@ const SIDES: SideChoice[] = ["w", "random", "b"];
 const COLORS: PieceColor[] = ["w", "b"];
 const FLIES = OPPONENTS.filter((opponent) => opponent.kind === "fly");
 /** Scout keeps the published 64-simulation benchmark; Thinker is the new 256 default. */
-const FEATURED = FLIES.find((opponent) => opponent.id === "scout")!;
+const FEATURED = FLIES.find((opponent) => opponent.id === "thinker")!;
 const MAIN_FLIES = FLIES.filter((opponent) => opponent !== FEATURED);
 const STOCKFISH_FAMILY = OPPONENTS.filter((opponent) => opponent.kind !== "fly");
 const SPEAKERS = [...OPPONENTS.map((opponent) => opponent.id), "mirror", "match"];
