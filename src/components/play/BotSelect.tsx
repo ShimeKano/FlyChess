@@ -202,7 +202,6 @@ export function BotSelect() {
           {MAIN_FLIES.map((item) => <BotCard key={item.id} opponent={item} selected={item.id === selectedId} subtitle={item.short} onSelect={() => pick(item.id)} />)}
         </div>
         <p className="bot-select__note">{t("select.ratingNote")}</p>
-details>
       </div>
 
       <div className="bot-select__section">
