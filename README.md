@@ -1,4 +1,4 @@
-![FlyChess: play chess against the brain of a fruit fly](docs/media/banner-illustrated.png)
+![FlyChess: play chess against the brain of a fruit fly](docs/media/banner-illustrated.png),
 
 Ever lost at chess to an insect? Here's your chance.
 
