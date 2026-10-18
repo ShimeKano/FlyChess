@@ -190,7 +190,7 @@
   "select.speech.mirror.0": "Me against me. May the better fly win.",
   "select.speech.mirror.1": "I'll play both sides. You watch the neurons.",
   "select.speech.mirror.2": "Finally, an opponent who thinks exactly like me.",
-  "preload.fact.4": "Scout, Tactician, Thinker and Sage share one brain. They spend different amounts of time searching; the Sage picks its own for every move.",
+  "preload.fact.4": "Scout, Tactician, and Thinker share the same brain. They differ only in search budget: 64, 128, and 256 simulations.",
   "preload.fact.5": "Every square has its own visual input, including the promotion ranks.",
   "preload.fact.6": "DROSO-1 trained from scratch on 26 million sampled positions.",
   "preload.fact.7": "2.7 million connections carry the strength of 34.2 million measured synapses.",
