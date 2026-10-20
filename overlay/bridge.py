@@ -10,6 +10,10 @@ clients = {"browser": set(), "overlay": set()}
 async def handler(websocket):
     path = websocket.request.path.rstrip("/")
     role = path.rsplit("/", 1)[-1]
+    origin = websocket.request.headers.get("Origin")
+    if origin and origin not in {"http://localhost:5180", "http://127.0.0.1:5180"}:
+        await websocket.close(code=1008, reason="origin not allowed")
+        return
     if role not in clients:
         await websocket.close(code=1008, reason="unknown role")
         return
