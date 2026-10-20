@@ -59,13 +59,21 @@ export function ExternalOverlayPage() {
     return () => { stopped = true; if (retry) window.clearTimeout(retry); socket.current?.close(); };
   }, [level]);
 
-  const sendTest = () => {
+  const sendTest = async () => {
     try {
       const chess = new Chess(fen);
       if (chess.isGameOver()) { setStatus("Vị trí đã kết thúc ván."); return; }
-      socket.current?.send(JSON.stringify({type:"position",fen,halfMoves:0,requestId:"manual-"+Date.now()}));
-      setStatus("Đã gửi FEN cho DROSO-1…");
-    } catch { setStatus("FEN không hợp lệ."); }
+      const selected = FLY_LEVELS.find(x => x.id === level) ?? FLY_LEVELS[2];
+      setStatus("Đang chạy DROSO-1…");
+      await getFlyEngine().init();
+      const result = await getFlyEngine().think(fen, { ...selected.plan, temperature: 0 }, false, true);
+      const move = result.decision.move;
+      const played = chess.move({from:move.slice(0,2),to:move.slice(2,4),promotion:move[4]});
+      if (!played) throw new Error("Nước đi không hợp lệ với FEN đã nhập.");
+      setUci(move);
+      socket.current?.send(JSON.stringify({type:"move",fen,uci:move,requestId:"manual-"+Date.now()}));
+      setStatus("DROSO-1 đã tính nước đi và gửi kết quả qua bridge.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "FEN không hợp lệ."); }
   };
 
   return <main className="external-overlay">
