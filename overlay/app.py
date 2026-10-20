@@ -1,9 +1,22 @@
-"""Windows helper UI and transparent arrow overlay. Does not send mouse/keyboard input."""
-import asyncio, json, sys, threading, math
-from PySide6.QtCore import Qt, QPoint, Signal, QObject
+"""Realtime Windows chessboard capture + transparent move-arrow overlay.
+Captures only the user-selected screen region locally; no screenshots are uploaded.
+"""
+import asyncio, json, sys, threading, math, time
+from pathlib import Path
+
+import cv2
+import mss
+import numpy as np
+from PySide6.QtCore import Qt, QPoint, QRect, QTimer, Signal, QObject
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygon
-from PySide6.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox, QHBoxLayout, QVBoxLayout, QFormLayout
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QSpinBox,
+    QComboBox, QHBoxLayout, QVBoxLayout, QFormLayout, QRubberBand
+)
 from websockets.asyncio.client import connect
+from recognize import load_templates, recognize_board
+
+BRIDGE_URL = "ws://127.0.0.1:8765/overlay"
 
 class BridgeWorker(QObject):
     message = Signal(dict)
@@ -15,8 +28,8 @@ class BridgeWorker(QObject):
         self.loop=asyncio.get_running_loop(); self.queue=asyncio.Queue()
         while True:
             try:
-                async with connect("ws://127.0.0.1:8765/overlay") as ws:
-                    self.status.emit("Bridge đã kết nối.")
+                async with connect(BRIDGE_URL) as ws:
+                    self.status.emit("Bridge localhost đã kết nối.")
                     async def sender():
                         while True: await ws.send(json.dumps(await self.queue.get()))
                     task=asyncio.create_task(sender())
@@ -24,11 +37,35 @@ class BridgeWorker(QObject):
                         async for raw in ws:
                             try: self.message.emit(json.loads(raw))
                             except Exception: pass
-                    finally: task.cancel()
+                    finally:
+                        task.cancel()
             except Exception as exc:
                 self.status.emit("Đang chờ bridge: "+str(exc)); await asyncio.sleep(1.5)
     def send(self, payload):
         if self.loop and self.queue: asyncio.run_coroutine_threadsafe(self.queue.put(payload), self.loop)
+
+class RegionSelector(QWidget):
+    selected = Signal(int, int, int, int)
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.origin = QPoint(); self.rubber = QRubberBand(QRubberBand.Shape.Rectangle, self)
+        self.setStyleSheet("background: rgba(20,25,30,75);")
+        self.show()
+    def mousePressEvent(self, event):
+        self.origin = event.position().toPoint()
+        self.rubber.setGeometry(QRect(self.origin, self.origin)); self.rubber.show()
+    def mouseMoveEvent(self, event):
+        self.rubber.setGeometry(QRect(self.origin, event.position().toPoint()).normalized())
+    def mouseReleaseEvent(self, event):
+        rect = self.rubber.geometry().normalized()
+        if rect.width() >= 160 and rect.height() >= 160:
+            geo = self.geometry()
+            self.selected.emit(geo.x()+rect.x(), geo.y()+rect.y(), rect.width(), rect.height())
+        self.close()
 
 class ArrowOverlay(QWidget):
     def __init__(self):
@@ -36,7 +73,8 @@ class ArrowOverlay(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+        self.screen_geo=QApplication.primaryScreen().virtualGeometry()
+        self.setGeometry(self.screen_geo)
         self.a=self.b=None; self.board=(100,100,600,600); self.flipped=False; self.show()
     def set_move(self, uci, board, flipped):
         if len(uci)<4: return
@@ -45,8 +83,7 @@ class ArrowOverlay(QWidget):
     def center(self, square):
         x,y,w,h=self.board; f=ord(square[0])-97; r=int(square[1])-1
         if self.flipped: f,r=7-f,7-r
-        origin=QApplication.primaryScreen().virtualGeometry().topLeft()
-        return QPoint(round(x-origin.x()+(f+.5)*w/8),round(y-origin.y()+(7-r+.5)*h/8))
+        return QPoint(round(x-self.screen_geo.x()+(f+.5)*w/8),round(y-self.screen_geo.y()+(7-r+.5)*h/8))
     def paintEvent(self, event):
         if not self.a or not self.b: return
         p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -59,33 +96,83 @@ class ArrowOverlay(QWidget):
 
 class ControlPanel(QWidget):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("FlyChess DROSO-1 · Windows Overlay"); self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint); self.resize(440,470)
-        self.bridge=BridgeWorker(); self.arrow=ArrowOverlay(); root=QVBoxLayout(self)
-        root.addWidget(QLabel("Overlay hướng dẫn nước đi · không tự click"))
-        self.status=QLabel("Đang khởi động bridge…"); root.addWidget(self.status)
+        super().__init__(); self.setWindowTitle("FlyChess DROSO-1 · Realtime Windows Overlay"); self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint); self.resize(460,520)
+        self.bridge=BridgeWorker(); self.arrow=ArrowOverlay()
+        self.region=None; self.templates=None; self.scan_enabled=False; self.last_signature=None
+        self.turn="w"; self.flipped=False; self.board=(100,100,600,600); self.last_scan=0.0
+        root=QVBoxLayout(self)
+        root.addWidget(QLabel("Realtime overlay · xử lý ảnh cục bộ · không tự click"))
+        self.status=QLabel("Đang khởi động bridge…"); self.status.setWordWrap(True); root.addWidget(self.status)
         form=QFormLayout(); self.x=self.spin(100); self.y=self.spin(100); self.w=self.spin(600); self.h=self.spin(600)
-        form.addRow("Board X (màn hình)",self.x); form.addRow("Board Y (màn hình)",self.y); form.addRow("Chiều rộng",self.w); form.addRow("Chiều cao",self.h)
+        form.addRow("X vùng bàn cờ",self.x); form.addRow("Y vùng bàn cờ",self.y); form.addRow("Chiều rộng",self.w); form.addRow("Chiều cao",self.h)
         self.side=QComboBox(); self.side.addItems(["Trắng ở dưới","Đen ở dưới"]); form.addRow("Hướng bàn cờ",self.side); root.addLayout(form)
-        self.fen=QLineEdit("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        root.addWidget(QLabel("FEN chính xác (nhận diện ảnh chưa có)")); root.addWidget(self.fen)
-        row=QHBoxLayout(); send=QPushButton("Gửi vị trí → DROSO-1"); send.clicked.connect(self.send_position); row.addWidget(send)
-        clear=QPushButton("Xóa mũi tên"); clear.clicked.connect(self.arrow.clear); row.addWidget(clear); root.addLayout(row)
+        self.turn_box=QComboBox(); self.turn_box.addItems(["Lượt Trắng","Lượt Đen"]); root.addWidget(self.turn_box)
+        row=QHBoxLayout()
+        select=QPushButton("Khoanh vùng bàn cờ"); select.clicked.connect(self.select_region); row.addWidget(select)
+        self.start_button=QPushButton("Bắt đầu realtime"); self.start_button.clicked.connect(self.toggle_scan); row.addWidget(self.start_button)
+        root.addLayout(row)
+        clear=QPushButton("Xóa mũi tên"); clear.clicked.connect(self.arrow.clear); root.addWidget(clear)
+        root.addWidget(QLabel("Cách dùng: khoanh đúng 8×8 ô bàn cờ (không gồm viền/tọa độ), rồi bật realtime."))
+        root.addWidget(QLabel("Nhận diện ảnh là heuristic; kiểm tra FEN/nước đi trước khi tin mũi tên."))
         self.bridge.status.connect(self.status.setText); self.bridge.message.connect(self.on_message)
-        root.addWidget(QLabel("Căn X/Y theo góc trên-trái bàn cờ Roblox."))
-        root.addWidget(QLabel("Bản đầu yêu cầu nhập FEN thủ công; chưa tự đọc quân."))
+        self.timer=QTimer(self); self.timer.setInterval(350); self.timer.timeout.connect(self.scan_tick)
     def spin(self, value):
         s=QSpinBox(); s.setRange(-10000,20000); s.setValue(value); return s
-    def send_position(self):
-        self.bridge.send({"type":"position","fen":self.fen.text().strip(),"requestId":"windows-overlay",
-            "board":{"x":self.x.value(),"y":self.y.value(),"w":self.w.value(),"h":self.h.value()},"flipped":self.side.currentIndex()==1})
-        self.status.setText("Đã gửi vị trí; đang chờ DROSO-1…")
+    def select_region(self):
+        self.region=RegionSelector(); self.region.selected.connect(self.region_selected)
+    def region_selected(self,x,y,w,h):
+        self.board=(x,y,w,h); self.x.setValue(x); self.y.setValue(y); self.w.setValue(w); self.h.setValue(h)
+        self.status.setText(f"Đã khoanh vùng: {w}×{h} px. Bật realtime để bắt đầu.")
+    def toggle_scan(self):
+        if self.scan_enabled:
+            self.scan_enabled=False; self.timer.stop(); self.start_button.setText("Bắt đầu realtime")
+            self.status.setText("Đã tạm dừng nhận diện."); return
+        self.board=(self.x.value(),self.y.value(),self.w.value(),self.h.value())
+        if self.board[2] < 160 or self.board[3] < 160:
+            self.status.setText("Vùng quá nhỏ. Hãy khoanh lại bàn cờ trước."); return
+        self.scan_enabled=True; self.last_signature=None; self.turn="w" if self.turn_box.currentIndex()==0 else "b"
+        self.flipped=self.side.currentIndex()==1; self.start_button.setText("Dừng realtime")
+        self.status.setText("Đang tải 12 mẫu assneo…")
+        threading.Thread(target=self.load_templates_async,daemon=True).start()
+    def load_templates_async(self):
+        try:
+            loaded=load_templates()
+            self.templates=loaded
+            QTimer.singleShot(0, lambda: self.status.setText("Đã tải mẫu assneo. Đang nhận diện bàn cờ…"))
+            QTimer.singleShot(0, self.start_timer_if_ready)
+        except Exception as exc:
+            QTimer.singleShot(0, lambda: self.status.setText("Lỗi tải mẫu assneo: "+str(exc)))
+    def start_timer_if_ready(self):
+        if self.scan_enabled and self.templates: self.timer.start()
+    def scan_tick(self):
+        if not self.scan_enabled or not self.templates: return
+        x,y,w,h=self.board
+        try:
+            with mss.mss() as sct:
+                shot=np.array(sct.grab({"left":x,"top":y,"width":w,"height":h}))
+            frame=cv2.cvtColor(shot,cv2.COLOR_BGRA2BGR)
+            placement, confidence, debug=recognize_board(frame,self.templates,flipped=self.flipped)
+            signature=placement
+            # Require the same recognized placement twice before sending it to the model.
+            if signature == self.last_signature:
+                return
+            self.last_signature=signature
+            # A fresh screen gives piece placement, but cannot reveal castling/en-passant rights.
+            fen=f"{placement} {self.turn} - - 0 1"
+            self.bridge.send({"type":"position","fen":fen,"requestId":"realtime-overlay",
+                "board":{"x":x,"y":y,"w":w,"h":h},"flipped":self.flipped,"source":"local-realtime"})
+            self.status.setText(f"Đã nhận diện vị trí mới ({sum(1 for r in placement.split('/') for c in r if c.isalpha())} quân). Đang chờ DROSO-1…")
+        except Exception as exc:
+            self.status.setText("Lỗi nhận diện: "+str(exc))
     def on_message(self, data):
         if data.get("type")=="move":
-            b=data.get("board") or {"x":self.x.value(),"y":self.y.value(),"w":self.w.value(),"h":self.h.value()}
-            self.arrow.set_move(data.get("uci",""),(b["x"],b["y"],b["w"],b["h"]),bool(data.get("flipped",self.side.currentIndex()==1)))
-            self.status.setText("DROSO-1 đề xuất: "+data.get("uci",""))
-        elif data.get("type")=="status" and data.get("status")=="error": self.status.setText("Lỗi: "+str(data.get("message","không rõ")))
-    def closeEvent(self,event): self.arrow.close(); event.accept()
+            b=data.get("board") or {"x":self.board[0],"y":self.board[1],"w":self.board[2],"h":self.board[3]}
+            self.arrow.set_move(data.get("uci",""),(b["x"],b["y"],b["w"],b["h"]),bool(data.get("flipped",self.flipped)))
+            self.status.setText("DROSO-1 đề xuất: "+data.get("uci","")+" · kiểm tra trạng thái bàn cờ")
+        elif data.get("type")=="status" and data.get("status")=="error":
+            self.status.setText("Lỗi: "+str(data.get("message","không rõ")))
+    def closeEvent(self,event):
+        self.timer.stop(); self.arrow.close(); event.accept()
 
 if __name__=="__main__":
     app=QApplication(sys.argv); panel=ControlPanel(); panel.show(); sys.exit(app.exec())
