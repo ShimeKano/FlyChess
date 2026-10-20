@@ -19,8 +19,9 @@ import { useTranslation } from "@/i18n";
 import "@/brain/clock";
 import "@/styles/board.css";
 import "@/styles/app.css";
+import { ExternalOverlayPage } from "@/components/external-overlay/ExternalOverlayPage";
 
-export function App() {
+function FlyChessApp() {
   const view = useUiStore((s) => s.view);
   const sound = useSettingsStore((s) => s.sound);
   const volume = useSettingsStore((s) => s.volume);
@@ -55,4 +56,11 @@ export function App() {
       <Toast />
     </div>
   );
+}
+
+
+/** Keep the external integration isolated from the normal FlyChess game shell. */
+export function App() {
+  if (window.location.pathname === "/external-overlay") return <ExternalOverlayPage />;
+  return <FlyChessApp />;
 }
